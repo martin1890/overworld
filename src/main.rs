@@ -2,6 +2,9 @@ use rand::{RngExt, SeedableRng};
 use rand::rngs::StdRng;
 use std::collections::HashMap;
 
+mod rendering;
+use rendering::minifb_viewer::GridViewer;
+
 struct Player {
     position_x: f64;
     position_y: f64;
@@ -25,10 +28,13 @@ fn deterministic_heightmap(seed: i32, x: i32, y: i32) -> f32 {
 }
 
 fn initial_chunks(seed: i32, x: i32, y: i32) {
+    let mut chunk_height: f32;
     for n in -50..50 {
         for k in -50..50 {
+            chunk_height = deterministic_heightmap(seed, x+n, y+k);
+            
             let mut chunk = Chunk {
-                height: deterministic_heightmap(seed, x+n, y+k);
+                height: chunk_height;
             }
             chunks.insert((x+n, y+k), chunk);
         }
@@ -52,4 +58,6 @@ fn main() {
 
     println!("Hello World!");
     println!("Random number is: {}", x);
+
+
 }
