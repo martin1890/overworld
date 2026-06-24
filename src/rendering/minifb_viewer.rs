@@ -1,127 +1,141 @@
-use minifb::{Key, KeyRepeat, MouseButton, MouseMode, Window, WindowOptions};
+use std::collections::HashMap;
 
-pub struct GridViewer {
-    window: Window,
-    buffer: Vec<u32>,
+use minifb::{Key, KeyRepeat, Window, WindowOptions};
 
-    grid_width: usize,
-    grid_height: usize,
-    cell_size: usize,
+use crate::Chunk;
 
-    screen_width: usize,
-    screen_height: usize,
+const VIEW_RADIUS: i32 = 30;
+const GRID_SIZE: usize = 60;
+const CELL_SIZE: usize = 12;
 
-    paused: bool,
+const SCREEN_WIDTH: usize = GRID_SIZE * CELL_SIZE;
+const SCREEN_HEIGHT: usize = GRID_SIZE * CELL_SIZE;
+
+fn height_to_color(height: f32) -> u32 {
+    if height < 0.25 {
+        0x0033AA
+    } else if height < 0.35 {
+        0x2277DD
+    } else if height < 0.50 {
+        0x22AA22
+    } else if height < 0.70 {
+        0x228822
+    } else if height < 0.85 {
+        0x777777
+    } else {
+        0xFFFFFF
+    }
 }
 
-impl GridViewer {
-    pub fn new(
-        title: &str,
-        grid_width: usize,
-        grid_height: usize,
-        cell_size: usize,
-    ) -> Result<Self, minifb::Error> {
-        let screen_width = grid_width * cell_size;
-        let screen_height = grid_height * cell_size;
+fn get_or_create_chunk(
+    chunks: &mut HashMap<(i32, i32), Chunk>,
+    seed: u32,
+    x: i32,
+    y: i32,
+    height_fn: fn(u32, i32, i32) -> f32,
+) -> &Chunk {
+    chunks.entry((x, y)).or_insert_with(|| Chunk {
+        height: height_fn(seed, x, y),
+    })
+}
 
-        let window = Window::new(
-            title,
-            screen_width,
-            screen_height,
-            WindowOptions::default(),
-        )?;
+fn draw_cell(
+    buffer: &mut [u32],
+    grid_x: usize,
+    grid_y: usize,
+    color: u32,
+) {
+    let start_x = grid_x * CELL_SIZE;
+    let start_y = grid_y * CELL_SIZE;
 
-        let buffer = vec![0; screen_width * screen_height];
-
-        Ok(Self {
-            window,
-            buffer,
-            grid_width,
-            grid_height,
-            cell_size,
-            screen_width,
-            screen_height,
-            paused: false,
-        })
+    for y in start_y..start_y + CELL_SIZE {
+        for x in start_x..start_x + CELL_SIZE {
+            buffer[y * SCREEN_WIDTH + x] = color;
+        }
     }
+}
 
-    pub fn is_open(&self) -> bool {
-        self.window.is_open() && !self.window.is_key_down(Key::Escape)
-    }
+fn draw_view(
+    buffer: &mut [u32],
+    chunks: &mut HashMap<(i32, i32), Chunk>,
+    seed: u32,
+    player_x: i32,
+    player_y: i32,
+    height_fn: fn(u32, i32, i32) -> f32,
+) {
+    buffer.fill(0x000000);
 
-    pub fn is_paused(&self) -> bool {
-        self.paused
-    }
+    let start_x = player_x - VIEW_RADIUS;
+    let start_y = player_y - VIEW_RADIUS;
 
-    pub fn should_step(&self) -> bool {
-        self.window.is_key_pressed(Key::Right, KeyRepeat::No)
-    }
+    for screen_y in 0..GRID_SIZE {
+        for screen_x in 0..GRID_SIZE {
+            let world_x = start_x + screen_x as i32;
+            let world_y = start_y + screen_y as i32;
 
-    pub fn update_input(&mut self) {
-        if self.window.is_key_pressed(Key::Space, KeyRepeat::No) {
-            self.paused = !self.paused;
+            let chunk = get_or_create_chunk(
+                chunks,
+                seed,
+                world_x,
+                world_y,
+                height_fn,
+            );
+
+            let color = height_to_color(chunk.height);
+            draw_cell(buffer, screen_x, screen_y, color);
         }
     }
 
-    pub fn draw_grid<T, F>(
-        &mut self,
-        grid: &[Vec<T>],
-        mut color_fn: F,
-    ) -> Result<(), minifb::Error>
-    where
-        F: FnMut(&T) -> u32,
-    {
-        self.clear(0xFFFFFF);
+    draw_cell(buffer, GRID_SIZE / 2, GRID_SIZE / 2, 0xFF0000);
+}
 
-        for y in 0..self.grid_height {
-            for x in 0..self.grid_width {
-                let color = color_fn(&grid[y][x]);
-                self.draw_cell(x, y, color);
-            }
+pub fn run_heightmap_viewer(
+    chunks: &mut HashMap<(i32, i32), Chunk>,
+    seed: u32,
+    start_x: i32,
+    start_y: i32,
+    height_fn: fn(u32, i32, i32) -> f32,
+) -> Result<(), minifb::Error> {
+    let mut window = Window::new(
+        "Heightmap Viewer - WASD to move, ESC to exit",
+        SCREEN_WIDTH,
+        SCREEN_HEIGHT,
+        WindowOptions::default(),
+    )?;
+
+    let mut buffer = vec![0; SCREEN_WIDTH * SCREEN_HEIGHT];
+
+    let mut player_x = start_x;
+    let mut player_y = start_y;
+
+    while window.is_open() && !window.is_key_down(Key::Escape) {
+        if window.is_key_pressed(Key::W, KeyRepeat::Yes) {
+            player_y -= 1;
         }
 
-        self.window
-            .update_with_buffer(&self.buffer, self.screen_width, self.screen_height)
-    }
-
-    pub fn get_mouse_grid_position(&self) -> Option<(usize, usize)> {
-        let (mouse_x, mouse_y) = self.window.get_mouse_pos(MouseMode::Discard)?;
-
-        let grid_x = mouse_x as usize / self.cell_size;
-        let grid_y = mouse_y as usize / self.cell_size;
-
-        if grid_x < self.grid_width && grid_y < self.grid_height {
-            Some((grid_x, grid_y))
-        } else {
-            None
+        if window.is_key_pressed(Key::S, KeyRepeat::Yes) {
+            player_y += 1;
         }
-    }
 
-    pub fn is_left_mouse_down(&self) -> bool {
-        self.window.get_mouse_down(MouseButton::Left)
-    }
-
-    pub fn is_key_down(&self, key: Key) -> bool {
-        self.window.is_key_down(key)
-    }
-
-    pub fn is_key_pressed(&self, key: Key) -> bool {
-        self.window.is_key_pressed(key, KeyRepeat::No)
-    }
-
-    fn clear(&mut self, color: u32) {
-        self.buffer.fill(color);
-    }
-
-    fn draw_cell(&mut self, grid_x: usize, grid_y: usize, color: u32) {
-        let start_x = grid_x * self.cell_size;
-        let start_y = grid_y * self.cell_size;
-
-        for y in start_y..start_y + self.cell_size {
-            for x in start_x..start_x + self.cell_size {
-                let index = y * self.screen_width + x;
-                self.buffer[index] = color;
-            }
+        if window.is_key_pressed(Key::A, KeyRepeat::Yes) {
+            player_x -= 1;
         }
+
+        if window.is_key_pressed(Key::D, KeyRepeat::Yes) {
+            player_x += 1;
+        }
+
+        draw_view(
+            &mut buffer,
+            chunks,
+            seed,
+            player_x,
+            player_y,
+            height_fn,
+        );
+
+        window.update_with_buffer(&buffer, SCREEN_WIDTH, SCREEN_HEIGHT)?;
     }
+
+    Ok(())
 }
